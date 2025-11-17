@@ -1,12 +1,15 @@
-<div align="center">
+## Support for the project was discontinued on November 16, 2025. Thank you to everyone who used it, helped with the implementation of new features and bug fixes, and a special thank you to everyone who provided financial support!!!
 
+---
+
+<div align="center">
   <img src="https://github.com/shadowcopyrz/etkg/blob/main/img/logo_alt.png?raw=true" alt="logo"/>
     
   ![Version](https://img.shields.io/badge/version-1.5.6.2-gold)
   
   [![Commit activity](https://img.shields.io/github/commit-activity/t/shadowcopyrz/etkg/main?cacheSeconds=0)](https://github.com/shadowcopyrz/etkg/commits/main)
   ![Last commit](https://img.shields.io/github/last-commit/shadowcopyrz/etkg/main?cacheSeconds=0)
-  ![Last test](https://img.shields.io/badge/last_test-13.11.2025_15:23_UTC+3-blue)
+  ![Last test](https://img.shields.io/badge/last_test-14.11.2025_15:23_UTC+3-blue)
   [![Opened issues](https://img.shields.io/github/issues/shadowcopyrz/etkg?color=darkred)](https://github.com/shadowcopyrz/etkg/issues?cacheSeconds=0)
   [![Closed issues](https://img.shields.io/github/issues-closed/shadowcopyrz/etkg?color=darkgreen&cacheSeconds=0)](https://github.com/shadowcopyrz/etkg/issues?q=is%3Aissue+is%3Aclosed)
   ![License](https://img.shields.io/github/license/shadowcopyrz/etkg)
@@ -40,7 +43,7 @@ My [public channel with archives of my projects](https://t.me/rzc0d3r_official)
 
 ---
 ## Project Status 
-- Current Status: Active development
+- Current Status: Closed
 
 ## Known Errors
 - **Almost all Email APIs have been blocked by ESET!!!** Recommended to use ```emailfake```, ```inboxes``` and also use the ```--custom-email-api``` argument!
