@@ -3,13 +3,13 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.remote.webdriver import WebDriver
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.by import By
-
 
 from modules.utils.helpers import button_with_text_is_clickable, dataGenerator
 from modules.eset.parsers import parseESETToken, parseESETProtectHubKey
 from modules.utils.logger import console_log, INFO, OK, ERROR, WARN
-from modules.EmailAPIs import BaseEmailAPI
+from modules.EmailAPIs import BaseEmailAPI, CustomEmailAPI
 
 from typing import Optional, Tuple, Union, List
 
@@ -23,10 +23,11 @@ class IPBlockedException(Exception):
         super().__init__(message)
 
 class EsetRegister:
-    def __init__(self, registered_email_obj: BaseEmailAPI, eset_password: str, driver: WebDriver):
+    def __init__(self, registered_email_obj: BaseEmailAPI, eset_password: str, driver: WebDriver, country: str):
         self.email_obj = registered_email_obj
         self.eset_password = eset_password
         self.driver = driver
+        self.country = country
         self.window_handle: Optional[str] = None
         self.wait = WebDriverWait(self.driver, 15)
 
@@ -65,20 +66,7 @@ class EsetRegister:
         time.sleep(0.5)
         self.driver.find_element(By.ID, 'password').send_keys(self.eset_password)
         
-        logging.info('Selecting the country...')
-        try:
-            current_country = self.driver.find_element(By.CSS_SELECTOR, '.select__single-value.css-1dimb5e-singleValue').text
-            if current_country != 'Ukraine':
-                dropdown = self.driver.find_element(By.CSS_SELECTOR, '.select__control.css-13cymwt-control')
-                self.driver.execute_script('arguments[0].click();', dropdown)
-                
-                for country in self.driver.find_elements(By.CSS_SELECTOR, '.select__option.css-uhiml7-option'):
-                    if country.text == 'Ukraine':
-                        self.driver.execute_script('arguments[0].click();', country)
-                        logging.info('Country selected!')
-                        break
-        except NoSuchElementException:
-            pass
+        self.select_country(driver=self.driver, target_country=self.country, locator='.select__control')
 
         create_button = self.driver.find_element(By.CSS_SELECTOR, "button[data-label='register-create-account-button']")
         self.driver.execute_script('arguments[0].click();', create_button)
@@ -101,7 +89,7 @@ class EsetRegister:
         raise IPBlockedException('\nESET temporarily blocked your IP, try again later!!! Try to use VPN/Proxy or try to change Email API!!!')
 
     def confirmAccount(self) -> bool:
-        if self.email_obj.class_name != 'custom':
+        if not isinstance(self.email_obj, CustomEmailAPI):
             logging.info(f'[{self.email_obj.class_name}] ESET-HOME-Token interception...')
             console_log(f'\n[{self.email_obj.class_name}] ESET-HOME-Token interception...', INFO)
 
@@ -141,6 +129,72 @@ class EsetRegister:
         console_log('Account successfully confirmed!', OK)
         return True
 
+    @staticmethod
+    def select_country(driver: WebDriver, target_country: str, locator: str) -> bool:
+        logging.info(f"Selecting country: '{target_country}' using locator '{locator}'...")
+        wait = WebDriverWait(driver, 5)
+        actions = ActionChains(driver)
+
+        try:
+            if locator.startswith('//'):
+                by_strategy, query = By.XPATH, locator
+            elif locator.startswith((".", "#", "[")) or " " in locator:
+                by_strategy, query = By.CSS_SELECTOR, locator
+            else:
+                by_strategy, query = By.XPATH, f"//*[@id='{locator}'] | //*[contains(@class, '{locator}')]"
+
+            container = wait.until(EC.presence_of_element_located((by_strategy, query)))
+            driver.execute_script("arguments[0].scrollIntoView({block: 'center', inline: 'nearest'});", container)
+            
+            try:
+                current_value = container.find_element(By.CSS_SELECTOR, '[class*="single-value"], [class*="singleValue"]').text.strip()
+                if current_value.lower() == target_country.strip().lower():
+                    logging.info(f"Country '{target_country}' is already selected.")
+                    return True
+            except NoSuchElementException:
+                pass
+
+            has_control_class = 'control' in (container.get_attribute('class') or '')
+            control = container if has_control_class else container.find_element(By.CSS_SELECTOR, '[class*="control"]')
+            
+            actions.move_to_element(control).click().perform()
+
+            input_field = wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, '[class*="control"] input, [class*="Input"] input')))
+            input_field.send_keys(Keys.CONTROL + 'a')
+            input_field.send_keys(Keys.BACKSPACE)
+            input_field.send_keys(target_country)
+
+            option_xpath = (
+                f"//*[contains(@class, 'option') and "
+                f"translate(normalize-space(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz') = "
+                f"'{target_country.strip().lower()}']"
+            )
+
+            try:
+                option = wait.until(EC.element_to_be_clickable((By.XPATH, option_xpath)))
+                
+                try:
+                    actions.move_to_element(option).click().perform()
+                except Exception:
+                    driver.execute_script('arguments[0].click();', option)
+
+            except TimeoutException:
+                logging.warning('Option element click timed out; sending ENTER key to input...')
+                input_field.send_keys(Keys.ENTER)
+
+            wait.until(
+                lambda d: target_country.lower() in container.find_element(
+                    By.CSS_SELECTOR, '[class*="single-value"], [class*="singleValue"]'
+                ).text.lower()
+            )
+
+            logging.info(f"Country '{target_country}' successfully selected!")
+            return True
+
+        except Exception as e:
+            logging.error(f"Failed to select country '{target_country}'!")
+            console_log(f"Failed to select country '{target_country}'!", ERROR)
+            raise e
 
 class EsetKeygen:
     def __init__(self, registered_email_obj: BaseEmailAPI, driver: WebDriver, mode: str = 'ESET HOME'):
@@ -148,7 +202,8 @@ class EsetKeygen:
         self.driver = driver
         self.mode = mode.upper()
         self.wait = WebDriverWait(self.driver, 15)
-        
+        self.need_resend_req = False
+
         if self.mode not in ['ESET HOME', 'SMALL BUSINESS']:
             raise RuntimeError('Undefined keygen mode!')
         
@@ -156,33 +211,78 @@ class EsetKeygen:
         logging.info(f'[{self.mode}] Sending request and waiting for response...')
         console_log(f'\n[{self.mode}] Sending request and waiting for response...', INFO)
 
+        if self.need_resend_req:
+            self.driver.get('https://home.eset.com')
+
         skip_button = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "button[data-label='onboarding-welcome-skip-introduction-btn']")))
         self.driver.execute_script('arguments[0].click();', skip_button)
-        
-        trial_button = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "label[data-label='onboarding-add-subscription-protect-card-trial']")))
-        self.driver.execute_script('arguments[0].click();', trial_button)
-        
-        self.__press_button_with_text(['continue', 'continua'])
-    
-        if self.mode == 'ESET HOME':
-            card_lbl = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "label[data-label='onboarding-trial-protect-card-148']")))
-        else:
-            card_lbl = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "label[data-label='onboarding-trial-protect-card-172']")))
-        
-        self.driver.execute_script('arguments[0].click();', card_lbl)
+
+        if not self.need_resend_req:     
+            trial_button = self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "label[data-label='onboarding-add-subscription-protect-card-trial']")))
+            self.driver.execute_script('arguments[0].click();', trial_button)
+            
+            self.__press_button_with_text(['continue', 'continua'])
+
+            localors = (
+                By.XPATH, 
+                "//*[@data-label='onboarding-trial-help-link'] | "
+                "//h1[contains(text(), 'No free 30-day trials available')] | "
+                "//label[@data-label='onboarding-trial-protect-card-148']"
+            )
+
+            found_element = self.wait.until(EC.visibility_of_element_located(localors))
+            data_label = found_element.get_attribute('data-label') or ''
+
+            if 'onboarding-trial-help-link' in data_label or 'trials' in found_element.text.lower():
+                raise RuntimeError('No free 30-day trials available!!!')
+
+            card_labels = [
+                found_element, # card-148
+                self.driver.find_element(By.CSS_SELECTOR, "label[data-label='onboarding-trial-protect-card-172']")
+            ]
+
+            if self.mode == 'ESET HOME':
+                card_lbl = card_labels[0]
+            else:
+                card_lbl = card_labels[1]
+            
+            self.driver.execute_script('arguments[0].click();', card_lbl)
         
         try:
-            self.__press_button_with_text(['continue', 'continua'])
-            self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-label='onboarding-trial-subscription-card']")))
+            if not self.need_resend_req:
+                self.__press_button_with_text(['continue', 'continua'])
             
-            time.sleep(0.5)
-            self.__press_button_with_text(['continue', 'continua'])
-            self.wait.until(EC.url_to_be('https://home.eset.com/onboarding/download'))
+            element = self.wait.until(
+                EC.any_of(
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "div[data-label='onboarding-trial-subscription-card']")),
+                    EC.presence_of_element_located((By.CSS_SELECTOR, "button[data-label^='choose-subscription-card-']")),
+                    EC.element_to_be_clickable(((By.CSS_SELECTOR, "button[data-label='common-error-modal-dismiss-btn']")))
+                )
+            )
 
-            logging.info(f'[{self.mode}] Response successfully received!')
-            console_log(f'[{self.mode}] Response successfully received!', OK)
+            data_label = element.get_attribute('data-label') or ''
+
+            if data_label == 'onboarding-trial-subscription-card' or data_label.startswith('choose-subscription-card-'):   
+                self.__press_button_with_text(['continue', 'continua'])
+                self.wait.until(EC.url_to_be('https://home.eset.com/onboarding/download'))
+                self.need_resend_req = False
+                logging.info(f'[{self.mode}] Response successfully received!')
+                console_log(f'[{self.mode}] Response successfully received!', OK)    
+            else: # try again
+                self.driver.execute_script('arguments[0].click();', element)
+                for _ in range(10):
+                    try:
+                        try_again_button = self.driver.find_element(By.CSS_SELECTOR, "a[data-label='common-layout-login-to-myESET-btn']")
+                        self.driver.execute_script('arguments[0].click();', try_again_button)
+                        self.need_resend_req = True
+                        break
+                    except:
+                        time.sleep(0.5)
         except Exception:
-            raise RuntimeError('Request sending error!!!')
+            if self.need_resend_req:
+                pass
+            else:
+                raise RuntimeError('Request sending error!!!')
 
     def getLD(self) -> Tuple[str, str, str]:
         logging.info('License uploads...')
@@ -230,9 +330,10 @@ class EsetKeygen:
             raise RuntimeError(f'Press button with text ({text}) error!!! Timeout exceeded.')
 
 class EsetProtectHubRegister:
-    def __init__(self, registered_email_obj: BaseEmailAPI, eset_password: str, driver: WebDriver):
+    def __init__(self, registered_email_obj: BaseEmailAPI, eset_password: str, driver: WebDriver, country: str):
         self.email_obj = registered_email_obj
         self.driver = driver
+        self.country = country
         self.eset_password = eset_password
         self.window_handle: Optional[str] = None
         self.wait = WebDriverWait(self.driver, 15)
@@ -260,21 +361,7 @@ class EsetProtectHubRegister:
         self.driver.find_element(By.ID, 'email-input').send_keys(self.email_obj.email)
         self.driver.find_element(By.ID, 'company-name-input').send_keys(dataGenerator(10))
         
-        logging.info('Selecting the country...')
-        country_dropdown = self.wait.until(EC.presence_of_element_located((By.ID, 'country-select')))
-        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", country_dropdown)
-        time.sleep(0.5)
-        
-        ActionChains(self.driver).move_to_element(country_dropdown).click().perform()
-        time.sleep(0.5)
-        
-        country_options = self.driver.find_elements(By.XPATH, '//div[starts-with(@class, "select")]')
-        for country in country_options:
-            if country.text.strip() == 'Ukraine':
-                self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", country)
-                ActionChains(self.driver).move_to_element(country).click().perform()
-                logging.info('Country selected!')
-                break
+        EsetRegister.select_country(driver=self.driver, target_country=self.country, locator='country-select')
         
         self.driver.find_element(By.ID, 'company-vat-input').send_keys(dataGenerator(10, True))
         self.driver.find_element(By.ID, 'company-crn-input').send_keys(dataGenerator(10, True))
@@ -331,7 +418,7 @@ class EsetProtectHubRegister:
         console_log('Successfully!', OK)
 
     def confirmAccount(self) -> None:
-        if self.email_obj.class_name != 'custom':
+        if not isinstance(self.email_obj, CustomEmailAPI):
             logging.info(f'[{self.email_obj.class_name}] ProtectHub-Token interception...')
             console_log(f'\n[{self.email_obj.class_name}] ProtectHub-Token interception...', INFO)
 
